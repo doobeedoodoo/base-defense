@@ -18,6 +18,18 @@ const TURRET_COOLDOWN_MS = 3000;
 const ELITE_CHANCE_PER_WAVE = 0.05;
 const ELITE_CHANCE_CAP = 0.65;
 
+// Upgrade system: 5 levels, cost escalates by 10 each tier
+const UPGRADE_COSTS = [10, 20, 30, 40, 50]; // cost to reach level 1,2,3,4,5
+// fireRateMult < 1 = shoots faster; damage = hp removed per hit
+const UPGRADE_STATS = [
+  { fireRateMult: 1.00, damage: 1 }, // level 0 — base
+  { fireRateMult: 0.80, damage: 1 }, // level 1 — slightly faster
+  { fireRateMult: 0.62, damage: 1 }, // level 2 — noticeably faster
+  { fireRateMult: 0.55, damage: 2 }, // level 3 — double damage
+  { fireRateMult: 0.44, damage: 2 }, // level 4 — rapid double damage
+  { fireRateMult: 0.36, damage: 3 }, // level 5 — elite rapid triple damage
+];
+
 // Slot hit-test constants (must match drawRows)
 const SLOT_X = BASE_X + 5;
 const SLOT_W = 50;
@@ -58,9 +70,14 @@ function generateStars(count) {
 
 const STARS = generateStars(120);
 
-// Returns which row index (0-7) a canvas-space point is in, or -1 if outside any slot.
+// Upgrade button lives at x=4..58 (left of base wall at x=60)
+const UPGRADE_BTN_X = 4;
+const UPGRADE_BTN_W = 54; // right edge = 58
+
+// Returns which row index (0-7) a canvas-space point falls on, covering both
+// the upgrade button zone (x=4..58) and the placement slot zone (x=65..115).
 function hitTestSlot(canvasX, canvasY) {
-  if (canvasX < SLOT_X || canvasX > SLOT_X + SLOT_W) return -1;
+  if (canvasX < UPGRADE_BTN_X || canvasX > SLOT_X + SLOT_W) return -1;
   for (let i = 0; i < NUM_ROWS; i++) {
     const slotY = getRowY(i) - SLOT_H / 2;
     if (canvasY >= slotY && canvasY <= slotY + SLOT_H) return i;
@@ -75,8 +92,10 @@ export default function BaseDefenseGame() {
   const hoveredRowRef = useRef(-1);   // read by game loop
   const cooldownEndRef = useRef(0);   // read by game loop
   const scoreRef = useRef(0);
+  const goldRef = useRef(0);
 
   const [score, setScore] = useState(0);
+  const [gold, setGold] = useState(0);
   const [wave, setWave] = useState(1);
   const [gameOver, setGameOver] = useState(false);
   const [gameStarted, setGameStarted] = useState(false);
@@ -85,8 +104,10 @@ export default function BaseDefenseGame() {
 
   const initGame = useCallback(() => {
     scoreRef.current = 0;
+    goldRef.current = 0;
     cooldownEndRef.current = 0;
     setScore(0);
+    setGold(0);
     setWave(1);
     setGameOver(false);
     gameStateRef.current = {
@@ -140,10 +161,14 @@ export default function BaseDefenseGame() {
     ctx.restore();
   };
 
-  const drawGun = (ctx, y, muzzleFlash) => {
+  const drawGun = (ctx, y, muzzleFlash, level = 0) => {
+    // Barrel color shifts from orange → gold → white-hot at max level
+    const barrelColors = ["#ff6f00", "#ff8f00", "#ffb300", "#ffd600", "#ffe57f", "#ffffff"];
+    const barrelColor = barrelColors[Math.min(level, 5)];
+
     ctx.save();
-    ctx.fillStyle = "#263238";
-    ctx.strokeStyle = COLORS.gun;
+    ctx.fillStyle = level >= 3 ? "#1a2a1a" : "#263238";
+    ctx.strokeStyle = level >= 5 ? "#ffd600" : level >= 3 ? "#76ff03" : COLORS.gun;
     ctx.lineWidth = 1.5;
     const bodyX = BASE_X + 10;
     const bodyW = 30;
@@ -153,9 +178,9 @@ export default function BaseDefenseGame() {
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = COLORS.gunBarrel;
-    ctx.shadowColor = COLORS.gunBarrel;
-    ctx.shadowBlur = muzzleFlash > 0 ? 20 : 6;
+    ctx.fillStyle = barrelColor;
+    ctx.shadowColor = barrelColor;
+    ctx.shadowBlur = muzzleFlash > 0 ? 20 : level >= 4 ? 10 : 6;
     ctx.fillRect(bodyX + bodyW, y - 4, GUN_WIDTH - bodyW + 8, 8);
 
     if (muzzleFlash > 0) {
@@ -473,13 +498,14 @@ export default function BaseDefenseGame() {
   };
 
   // Draw all 8 row slots as clickable placeholders
-  const drawRows = (ctx, turrets, tick, cooldownRemaining, hoveredSlot) => {
+  const drawRows = (ctx, turrets, tick, cooldownRemaining, hoveredSlot, gold) => {
     const onCooldown = cooldownRemaining > 0;
     const cooldownFrac = cooldownRemaining / TURRET_COOLDOWN_MS;
 
     for (let i = 0; i < NUM_ROWS; i++) {
       const y = getRowY(i);
-      const hasTurret = turrets.some((t) => t.rowIndex === i);
+      const turret = turrets.find((t) => t.rowIndex === i);
+      const hasTurret = !!turret;
       const isHovered = !hasTurret && !onCooldown && hoveredSlot === i;
 
       ctx.save();
@@ -498,7 +524,73 @@ export default function BaseDefenseGame() {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      if (!hasTurret) {
+      if (hasTurret) {
+        // ── Upgrade button — left of base wall (x=4..58) ────────────────────
+        const level = turret.level ?? 0;
+        const isMaxed = level >= 5;
+        const cost = isMaxed ? 0 : UPGRADE_COSTS[level];
+        const canAfford = !isMaxed && gold >= cost;
+        const slotY = y - SLOT_H / 2;
+        const cx = UPGRADE_BTN_X + UPGRADE_BTN_W / 2;  // center x = 31
+        const isUpgradeHovered = hoveredSlot === i;
+
+        // Background
+        ctx.fillStyle = isUpgradeHovered
+          ? canAfford ? "rgba(255,214,0,0.18)" : isMaxed ? "rgba(80,255,130,0.10)" : "rgba(255,60,60,0.12)"
+          : "rgba(0,0,0,0.5)";
+        ctx.beginPath();
+        ctx.roundRect(UPGRADE_BTN_X, slotY, UPGRADE_BTN_W, SLOT_H, 4);
+        ctx.fill();
+
+        // Border
+        ctx.strokeStyle = isMaxed
+          ? "rgba(80,255,130,0.7)"
+          : isUpgradeHovered
+            ? canAfford ? "rgba(255,214,0,1)" : "rgba(255,80,80,0.85)"
+            : "rgba(255,214,0,0.35)";
+        ctx.lineWidth = isUpgradeHovered ? 2 : 1;
+        ctx.beginPath();
+        ctx.roundRect(UPGRADE_BTN_X, slotY, UPGRADE_BTN_W, SLOT_H, 4);
+        ctx.stroke();
+
+        // Top label: "▲ Xg" or "★ MAX"
+        ctx.font = "bold 10px 'Courier New', monospace";
+        ctx.textAlign = "center";
+        if (isMaxed) {
+          ctx.shadowColor = "rgba(80,255,130,0.8)";
+          ctx.shadowBlur = isUpgradeHovered ? 8 : 4;
+          ctx.fillStyle = isUpgradeHovered ? "rgba(80,255,130,1)" : "rgba(80,255,130,0.8)";
+          ctx.fillText("★ MAX", cx, slotY + 14);
+        } else {
+          ctx.shadowColor = canAfford ? "#ffd600" : "transparent";
+          ctx.shadowBlur = isUpgradeHovered && canAfford ? 8 : 0;
+          ctx.fillStyle = isUpgradeHovered
+            ? canAfford ? "#ffd600" : "#ff6060"
+            : canAfford ? "rgba(255,214,0,0.8)" : "rgba(160,160,160,0.45)";
+          ctx.fillText(`▲ ${cost}g`, cx, slotY + 14);
+        }
+        ctx.shadowBlur = 0;
+
+        // Level pips (5 dots)
+        const dotR = 3.5;
+        const dotGap = 9;
+        const dotsStartX = cx - 2 * dotGap;
+        const dotsY = slotY + SLOT_H - 9;
+        for (let d = 0; d < 5; d++) {
+          if (d < level) {
+            ctx.shadowColor = "#ffd600";
+            ctx.shadowBlur = 5;
+            ctx.fillStyle = "#ffd600";
+          } else {
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = "rgba(255,214,0,0.15)";
+          }
+          ctx.beginPath();
+          ctx.arc(dotsStartX + d * dotGap, dotsY, dotR, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.shadowBlur = 0;
+      } else {
         const slotY = y - SLOT_H / 2;
         const cx = SLOT_X + SLOT_W / 2;
         const cy = slotY + SLOT_H / 2;
@@ -566,17 +658,55 @@ export default function BaseDefenseGame() {
     }
   };
 
-  const drawHUD = (ctx, score, wave, turretCount) => {
+  const drawHUD = (ctx, score, wave, turretCount, gold) => {
     ctx.save();
-    ctx.font = "bold 16px 'Courier New', monospace";
+
+    // ── Wave label (top-left) ────────────────────────────────────────────────
+    ctx.font = "bold 13px 'Courier New', monospace";
     ctx.fillStyle = COLORS.hud;
     ctx.textAlign = "left";
-    ctx.fillText(`SCORE: ${score}`, 14, 24);
-    ctx.fillText(`WAVE: ${wave}`, 14, 46);
+    ctx.fillText(`WAVE ${wave}`, 14, 20);
+
+    // ── Gold display ─────────────────────────────────────────────────────────
+    // Coin circle
+    const coinX = 22;
+    const coinY = 44;
+    const coinR = 12;
+    ctx.shadowColor = "#ffd600";
+    ctx.shadowBlur = 14;
+    ctx.fillStyle = "#ffd600";
+    ctx.beginPath();
+    ctx.arc(coinX, coinY, coinR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    // Inner ring
+    ctx.strokeStyle = "#ff8f00";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(coinX, coinY, coinR - 3, 0, Math.PI * 2);
+    ctx.stroke();
+    // "G" glyph
+    ctx.fillStyle = "#7a4000";
+    ctx.font = "bold 11px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("G", coinX, coinY + 4);
+
+    // Gold amount
+    ctx.shadowColor = "#ffd600";
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = "#ffd600";
+    ctx.font = "bold 22px 'Courier New', monospace";
+    ctx.textAlign = "left";
+    ctx.fillText(`${gold}`, coinX + coinR + 8, coinY + 8);
+    ctx.shadowBlur = 0;
+
+    // ── Right side ───────────────────────────────────────────────────────────
     ctx.textAlign = "right";
-    ctx.fillStyle = "rgba(0,229,255,0.5)";
+    ctx.fillStyle = "rgba(0,229,255,0.45)";
     ctx.font = "12px 'Courier New', monospace";
-    ctx.fillText(`TURRETS: ${turretCount}`, CANVAS_WIDTH - 14, 24);
+    ctx.fillText(`SCORE: ${score}`, CANVAS_WIDTH - 14, 20);
+    ctx.fillText(`TURRETS: ${turretCount}`, CANVAS_WIDTH - 14, 38);
+
     ctx.restore();
   };
 
@@ -595,11 +725,13 @@ export default function BaseDefenseGame() {
       gs.tick++;
 
       gs.turrets.forEach((turret) => {
-        if (gs.tick - turret.lastFire > FIRE_INTERVAL / 16) {
+        const stats = UPGRADE_STATS[turret.level ?? 0];
+        if (gs.tick - turret.lastFire > (FIRE_INTERVAL * stats.fireRateMult) / 16) {
           gs.bullets.push({
             x: BASE_X + GUN_WIDTH + 18,
             y: turret.y,
             id: gs.tick + turret.rowIndex * 0.001,
+            damage: stats.damage,
           });
           turret.lastFire = gs.tick;
           turret.muzzleFlash = 1;
@@ -647,7 +779,7 @@ export default function BaseDefenseGame() {
           const dx = b.x - a.x, dy = b.y - a.y;
           if (Math.sqrt(dx * dx + dy * dy) < a.size / 2 + BULLET_RADIUS) {
             gs.bullets.splice(i, 1);
-            a.hp--;
+            a.hp -= (b.damage ?? 1);
             const tierFx = [
               null,
               { glow: alienColors[a.type % 3], deathCount: 8,  spread: 2,   maxPx: 3 },
@@ -675,6 +807,8 @@ export default function BaseDefenseGame() {
             });
             scoreRef.current += a.maxHp * 10;
             setScore(scoreRef.current);
+            goldRef.current += a.maxHp;
+            setGold(goldRef.current);
             gs.aliensKilledInWave++;
             if (gs.aliensKilledInWave >= gs.waveThreshold) {
               gs.wave++;
@@ -726,13 +860,13 @@ export default function BaseDefenseGame() {
       }
 
       const cooldownRemaining = Math.max(0, cooldownEndRef.current - Date.now());
-      drawRows(ctx, gs.turrets, gs.tick, cooldownRemaining, hoveredRowRef.current);
+      drawRows(ctx, gs.turrets, gs.tick, cooldownRemaining, hoveredRowRef.current, goldRef.current);
       drawBase(ctx, gs.tick);
       gs.explosions.forEach((e) => drawExplosion(ctx, e));
       gs.bullets.forEach((b) => drawBullet(ctx, b));
       gs.aliens.forEach((a) => drawAlien(ctx, a, gs.tick));
-      gs.turrets.forEach((turret) => drawGun(ctx, turret.y, turret.muzzleFlash));
-      drawHUD(ctx, scoreRef.current, gs.wave, gs.turrets.length);
+      gs.turrets.forEach((turret) => drawGun(ctx, turret.y, turret.muzzleFlash, turret.level ?? 0));
+      drawHUD(ctx, scoreRef.current, gs.wave, gs.turrets.length, goldRef.current);
 
       animFrameRef.current = requestAnimationFrame(loop);
     };
@@ -746,15 +880,27 @@ export default function BaseDefenseGame() {
   const handleCanvasClick = useCallback((e) => {
     const gs = gameStateRef.current;
     if (!gs || !gs.running) return;
-    if (cooldownEndRef.current > Date.now()) return;
 
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
     const row = hitTestSlot(e.clientX - rect.left, e.clientY - rect.top);
     if (row === -1) return;
-    if (gs.turrets.some((t) => t.rowIndex === row)) return;
 
-    gs.turrets.push({ rowIndex: row, y: getRowY(row), lastFire: 0, muzzleFlash: 0 });
+    const existing = gs.turrets.find((t) => t.rowIndex === row);
+    if (existing) {
+      // Upgrade the turret
+      if (existing.level >= 5) return;
+      const cost = UPGRADE_COSTS[existing.level];
+      if (goldRef.current < cost) return;
+      goldRef.current -= cost;
+      setGold(goldRef.current);
+      existing.level++;
+      return;
+    }
+
+    // Place new turret
+    if (cooldownEndRef.current > Date.now()) return;
+    gs.turrets.push({ rowIndex: row, y: getRowY(row), lastFire: 0, muzzleFlash: 0, level: 0 });
     const end = Date.now() + TURRET_COOLDOWN_MS;
     cooldownEndRef.current = end;
   }, []);
@@ -767,9 +913,11 @@ export default function BaseDefenseGame() {
     const row = hitTestSlot(e.clientX - rect.left, e.clientY - rect.top);
     hoveredRowRef.current = row;
 
+    const existing = row !== -1 && gs && gs.turrets.find((t) => t.rowIndex === row);
+    const canUpgrade = existing && existing.level < 5 && goldRef.current >= UPGRADE_COSTS[existing.level];
     const onCooldown = cooldownEndRef.current > Date.now();
-    const isEmpty = row !== -1 && gs && !gs.turrets.some((t) => t.rowIndex === row);
-    canvas.style.cursor = (isEmpty && !onCooldown) ? "pointer" : "default";
+    const isEmpty = row !== -1 && !existing;
+    canvas.style.cursor = (canUpgrade || (isEmpty && !onCooldown)) ? "pointer" : "default";
   }, []);
 
   const handleCanvasMouseLeave = useCallback(() => {
@@ -904,6 +1052,9 @@ export default function BaseDefenseGame() {
             </div>
             <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 18, marginBottom: 6 }}>
               Score: <span style={{ color: COLORS.hud, fontWeight: 700 }}>{score}</span>
+            </div>
+            <div style={{ color: "#ffd600", fontSize: 16, marginBottom: 6, textShadow: "0 0 10px #ffd600" }}>
+              Gold: <span style={{ fontWeight: 700 }}>{gold}</span>
             </div>
             <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 14, marginBottom: 6 }}>Wave Reached: {wave}</div>
             <div style={{ color: "rgba(255,171,0,0.7)", fontSize: 14, marginBottom: 28 }}>High Score: {highScore}</div>
