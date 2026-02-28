@@ -5,15 +5,16 @@ const CANVAS_HEIGHT = 560;
 const GUN_WIDTH = 48;
 const BULLET_SPEED = 8;
 const BULLET_RADIUS = 4;
-const ALIEN_SPEED_BASE = 1.2;
+const ALIEN_SPEED_BASE = 0.8;
 const ALIEN_SIZE = 28;
+const ELITE_ALIEN_SIZE = 40;
 const BASE_X = 60;
-const SPAWN_INTERVAL_BASE = 1200;
-const FIRE_INTERVAL = 280;
+const SPAWN_INTERVAL_BASE = 2200;
+const FIRE_INTERVAL = 1680;
 const NUM_ROWS = 8;
 const ROW_HEIGHT = (CANVAS_HEIGHT - 60) / NUM_ROWS;
 const getRowY = (i) => 30 + ROW_HEIGHT * (i + 0.5);
-const TURRET_COOLDOWN_MS = 5000;
+const TURRET_COOLDOWN_MS = 3000;
 
 const COLORS = {
   bg: "#0a0e17",
@@ -30,6 +31,9 @@ const COLORS = {
   explosion: "#ffab00",
   hud: "#00e5ff",
   danger: "#ff1744",
+  eliteBody: "#7f2600",
+  eliteArmor: "#ff6d00",
+  eliteGlow: "#ff9800",
 };
 
 function generateStars(count) {
@@ -181,9 +185,10 @@ export default function BaseDefenseGame() {
 
   const alienColors = [COLORS.alien1, COLORS.alien2, COLORS.alien3];
 
-  const drawAlien = (ctx, a, tick) => {
+  const drawNormalAlien = (ctx, a, tick) => {
     const color = alienColors[a.type % 3];
     const wobble = Math.sin(tick * 0.08 + a.id * 2) * 2;
+    const r = ALIEN_SIZE / 2;
     ctx.save();
     ctx.translate(a.x, a.y + wobble);
     ctx.shadowColor = color;
@@ -191,18 +196,18 @@ export default function BaseDefenseGame() {
     ctx.fillStyle = color;
     ctx.beginPath();
     if (a.type === 0) {
-      ctx.moveTo(0, -ALIEN_SIZE / 2);
-      ctx.lineTo(ALIEN_SIZE / 2, ALIEN_SIZE / 2);
-      ctx.lineTo(-ALIEN_SIZE / 2, ALIEN_SIZE / 2);
+      ctx.moveTo(0, -r);
+      ctx.lineTo(r, r);
+      ctx.lineTo(-r, r);
       ctx.closePath();
     } else if (a.type === 1) {
-      ctx.moveTo(0, -ALIEN_SIZE / 2);
-      ctx.lineTo(ALIEN_SIZE / 2, 0);
-      ctx.lineTo(0, ALIEN_SIZE / 2);
-      ctx.lineTo(-ALIEN_SIZE / 2, 0);
+      ctx.moveTo(0, -r);
+      ctx.lineTo(r, 0);
+      ctx.lineTo(0, r);
+      ctx.lineTo(-r, 0);
       ctx.closePath();
     } else {
-      ctx.arc(0, 0, ALIEN_SIZE / 2, 0, Math.PI * 2);
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
     }
     ctx.fill();
     ctx.shadowBlur = 0;
@@ -217,6 +222,97 @@ export default function BaseDefenseGame() {
     ctx.arc(6, -3, 1.2, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
+  };
+
+  const drawEliteAlien = (ctx, a, tick) => {
+    const s = ELITE_ALIEN_SIZE / 2;
+    const wobble = Math.sin(tick * 0.04 + a.id * 2) * 1.5;
+    ctx.save();
+    ctx.translate(a.x, a.y + wobble);
+
+    // Rotating spike ring
+    ctx.save();
+    ctx.rotate(tick * 0.018);
+    ctx.strokeStyle = "rgba(255,152,0,0.55)";
+    ctx.lineWidth = 2;
+    ctx.shadowColor = COLORS.eliteGlow;
+    ctx.shadowBlur = 6;
+    for (let i = 0; i < 8; i++) {
+      const ang = (i / 8) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(ang) * (s + 1), Math.sin(ang) * (s + 1));
+      ctx.lineTo(Math.cos(ang) * (s + 9), Math.sin(ang) * (s + 9));
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Hexagonal outer body
+    ctx.shadowColor = COLORS.eliteGlow;
+    ctx.shadowBlur = 22;
+    ctx.fillStyle = COLORS.eliteBody;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const ang = (i / 6) * Math.PI * 2 - Math.PI / 6;
+      const x = Math.cos(ang) * s;
+      const y = Math.sin(ang) * s;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // Inner bright armour hex
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = COLORS.eliteArmor;
+    ctx.strokeStyle = "#ffab40";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const ang = (i / 6) * Math.PI * 2 - Math.PI / 6;
+      const x = Math.cos(ang) * s * 0.7;
+      const y = Math.sin(ang) * s * 0.7;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Armour dividing lines
+    ctx.strokeStyle = "rgba(0,0,0,0.45)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.55, 0); ctx.lineTo(s * 0.55, 0);
+    ctx.moveTo(0, -s * 0.55); ctx.lineTo(0, s * 0.55);
+    ctx.stroke();
+
+    // Angular red eyes
+    ctx.fillStyle = "#ff1744";
+    ctx.shadowColor = "#ff1744";
+    ctx.shadowBlur = 10;
+    ctx.save(); ctx.translate(-s * 0.28, -s * 0.18); ctx.rotate(-0.45);
+    ctx.fillRect(-5, -2.5, 10, 5);
+    ctx.restore();
+    ctx.save(); ctx.translate(s * 0.28, -s * 0.18); ctx.rotate(0.45);
+    ctx.fillRect(-5, -2.5, 10, 5);
+    ctx.restore();
+
+    // HP bar
+    const hpFrac = a.hp / a.maxHp;
+    const barW = s * 2.6;
+    const barH = 5;
+    const barX = -barW / 2;
+    const barY = -s - 12;
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "rgba(0,0,0,0.75)";
+    ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
+    ctx.fillStyle = hpFrac > 0.6 ? "#00e676" : hpFrac > 0.3 ? "#ffab00" : "#ff1744";
+    ctx.fillRect(barX, barY, barW * hpFrac, barH);
+
+    ctx.restore();
+  };
+
+  const drawAlien = (ctx, a, tick) => {
+    if (a.isElite) drawEliteAlien(ctx, a, tick);
+    else drawNormalAlien(ctx, a, tick);
   };
 
   const drawExplosion = (ctx, e) => {
@@ -340,18 +436,25 @@ const drawRows = (ctx, turrets, dragging, hoveredRow) => {
 
       // Spawn aliens on a random row
       if (gs.tick - gs.lastSpawn > gs.spawnInterval / 16) {
-        const type = Math.floor(Math.random() * 3);
         const rowIndex = Math.floor(Math.random() * NUM_ROWS);
         const y = getRowY(rowIndex);
-        const speed = gs.alienSpeed + Math.random() * 0.6;
+        const eliteChance = Math.min(0.5, Math.max(0, (gs.wave - 1) * 0.15));
+        const isElite = Math.random() < eliteChance;
+        const size = isElite ? ELITE_ALIEN_SIZE : ALIEN_SIZE;
+        const baseSpeed = gs.alienSpeed + Math.random() * 0.5;
+        const speed = isElite ? baseSpeed * 0.7 : baseSpeed;
+        const maxHp = isElite ? Math.min(6, 2 + Math.floor((gs.wave - 1) / 2)) : 1;
         gs.aliens.push({
-          x: CANVAS_WIDTH + ALIEN_SIZE,
+          x: CANVAS_WIDTH + size,
           y,
           rowIndex,
-          type,
+          type: Math.floor(Math.random() * 3),
           speed,
           id: gs.tick + Math.random(),
-          hp: 1,
+          hp: maxHp,
+          maxHp,
+          isElite,
+          size,
         });
         gs.lastSpawn = gs.tick;
       }
@@ -360,7 +463,7 @@ const drawRows = (ctx, turrets, dragging, hoveredRow) => {
       let hitBase = false;
       gs.aliens = gs.aliens.filter((a) => {
         a.x -= a.speed;
-        if (a.x - ALIEN_SIZE / 2 <= BASE_X) {
+        if (a.x - a.size / 2 <= BASE_X) {
           hitBase = true;
           return false;
         }
@@ -374,24 +477,44 @@ const drawRows = (ctx, turrets, dragging, hoveredRow) => {
           const b = gs.bullets[i];
           const dx = b.x - a.x;
           const dy = b.y - a.y;
-          if (Math.sqrt(dx * dx + dy * dy) < ALIEN_SIZE / 2 + BULLET_RADIUS) {
+          if (Math.sqrt(dx * dx + dy * dy) < a.size / 2 + BULLET_RADIUS) {
             gs.bullets.splice(i, 1);
-            const particles = Array.from({ length: 8 }, () => ({
-              vx: (Math.random() - 0.5) * 2,
-              vy: (Math.random() - 0.5) * 2,
-              size: Math.random() * 3 + 1,
-              color: alienColors[a.type % 3],
-            }));
-            newExplosions.push({ x: a.x, y: a.y, life: 1, maxLife: 1, particles });
-            scoreRef.current += 10;
+            a.hp--;
+            if (a.hp > 0) {
+              // Hit spark — small burst, enemy survives
+              const sparkColor = a.isElite ? COLORS.eliteGlow : alienColors[a.type % 3];
+              newExplosions.push({
+                x: b.x, y: b.y, life: 0.5, maxLife: 0.5,
+                particles: Array.from({ length: 5 }, () => ({
+                  vx: (Math.random() - 0.5) * 2.5,
+                  vy: (Math.random() - 0.5) * 2.5,
+                  size: Math.random() * 2 + 0.5,
+                  color: sparkColor,
+                })),
+              });
+              break; // one bullet per tick per alien
+            }
+            // Enemy dies
+            const particleCount = a.isElite ? 16 : 8;
+            const particleColor = a.isElite ? COLORS.eliteGlow : alienColors[a.type % 3];
+            newExplosions.push({
+              x: a.x, y: a.y, life: 1, maxLife: 1,
+              particles: Array.from({ length: particleCount }, () => ({
+                vx: (Math.random() - 0.5) * (a.isElite ? 3 : 2),
+                vy: (Math.random() - 0.5) * (a.isElite ? 3 : 2),
+                size: Math.random() * (a.isElite ? 5 : 3) + 1,
+                color: particleColor,
+              })),
+            });
+            scoreRef.current += a.isElite ? 30 : 10;
             setScore(scoreRef.current);
             gs.aliensKilledInWave++;
             if (gs.aliensKilledInWave >= gs.waveThreshold) {
               gs.wave++;
               gs.aliensKilledInWave = 0;
               gs.waveThreshold = Math.floor(gs.waveThreshold * 1.4);
-              gs.spawnInterval = Math.max(300, gs.spawnInterval - 80);
-              gs.alienSpeed = Math.min(4.5, gs.alienSpeed + 0.2);
+              gs.spawnInterval = Math.max(300, gs.spawnInterval - 150);
+              gs.alienSpeed = Math.min(5.0, gs.alienSpeed + 0.25);
               setWave(gs.wave);
             }
             return false;
