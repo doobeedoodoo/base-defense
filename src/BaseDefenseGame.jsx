@@ -3,15 +3,17 @@ import { useState, useEffect, useRef, useCallback } from "react";
 const CANVAS_WIDTH = 900;
 const CANVAS_HEIGHT = 560;
 const GUN_WIDTH = 48;
-const GUN_HEIGHT = 20;
 const BULLET_SPEED = 8;
 const BULLET_RADIUS = 4;
 const ALIEN_SPEED_BASE = 1.2;
 const ALIEN_SIZE = 28;
 const BASE_X = 60;
-const GUN_MOVE_SPEED = 6;
 const SPAWN_INTERVAL_BASE = 1200;
 const FIRE_INTERVAL = 280;
+const NUM_ROWS = 8;
+const ROW_HEIGHT = (CANVAS_HEIGHT - 60) / NUM_ROWS;
+const getRowY = (i) => 30 + ROW_HEIGHT * (i + 0.5);
+const TURRET_COOLDOWN_MS = 5000;
 
 const COLORS = {
   bg: "#0a0e17",
@@ -28,7 +30,6 @@ const COLORS = {
   explosion: "#ffab00",
   hud: "#00e5ff",
   danger: "#ff1744",
-  gridLine: "rgba(0,229,255,0.04)",
 };
 
 function generateStars(count) {
@@ -46,27 +47,34 @@ const STARS = generateStars(120);
 export default function BaseDefenseGame() {
   const canvasRef = useRef(null);
   const gameStateRef = useRef(null);
-  const keysRef = useRef({ up: false, down: false });
   const animFrameRef = useRef(null);
+  const isDraggingRef = useRef(false);
+  const hoveredRowRef = useRef(-1);
+  const scoreRef = useRef(0);
+
   const [score, setScore] = useState(0);
   const [wave, setWave] = useState(1);
   const [gameOver, setGameOver] = useState(false);
   const [gameStarted, setGameStarted] = useState(false);
   const [highScore, setHighScore] = useState(0);
   const [screenShake, setScreenShake] = useState(0);
-  const scoreRef = useRef(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragPos, setDragPos] = useState({ x: 0, y: 0 });
+  const [cooldownEnd, setCooldownEnd] = useState(0);
+  const [cooldownDisplay, setCooldownDisplay] = useState(0);
 
   const initGame = useCallback(() => {
     scoreRef.current = 0;
     setScore(0);
     setWave(1);
     setGameOver(false);
+    setCooldownEnd(0);
+    setCooldownDisplay(0);
     gameStateRef.current = {
-      gunY: CANVAS_HEIGHT / 2,
+      turrets: [],
       bullets: [],
       aliens: [],
       explosions: [],
-      lastFire: 0,
       lastSpawn: 0,
       tick: 0,
       wave: 1,
@@ -75,7 +83,6 @@ export default function BaseDefenseGame() {
       spawnInterval: SPAWN_INTERVAL_BASE,
       alienSpeed: ALIEN_SPEED_BASE,
       running: true,
-      muzzleFlash: 0,
     };
   }, []);
 
@@ -87,7 +94,6 @@ export default function BaseDefenseGame() {
   // Drawing helpers
   const drawBase = (ctx, tick) => {
     const pulse = Math.sin(tick * 0.03) * 6;
-    // Shield glow
     ctx.save();
     const grad = ctx.createRadialGradient(BASE_X, CANVAS_HEIGHT / 2, 20, BASE_X, CANVAS_HEIGHT / 2, 160 + pulse);
     grad.addColorStop(0, "rgba(0,229,255,0.07)");
@@ -96,7 +102,6 @@ export default function BaseDefenseGame() {
     ctx.fillRect(0, 0, BASE_X + 160, CANVAS_HEIGHT);
     ctx.restore();
 
-    // Base wall
     ctx.save();
     ctx.shadowColor = COLORS.base;
     ctx.shadowBlur = 18 + pulse;
@@ -107,7 +112,6 @@ export default function BaseDefenseGame() {
     ctx.lineTo(BASE_X, CANVAS_HEIGHT - 30);
     ctx.stroke();
 
-    // Base markers
     for (let i = 50; i < CANVAS_HEIGHT - 30; i += 40) {
       ctx.fillStyle = COLORS.base;
       ctx.globalAlpha = 0.5 + Math.sin(tick * 0.05 + i * 0.1) * 0.3;
@@ -119,7 +123,6 @@ export default function BaseDefenseGame() {
 
   const drawGun = (ctx, y, muzzleFlash) => {
     ctx.save();
-    // Gun body
     ctx.fillStyle = "#263238";
     ctx.strokeStyle = COLORS.gun;
     ctx.lineWidth = 1.5;
@@ -131,13 +134,11 @@ export default function BaseDefenseGame() {
     ctx.fill();
     ctx.stroke();
 
-    // Barrel
     ctx.fillStyle = COLORS.gunBarrel;
     ctx.shadowColor = COLORS.gunBarrel;
     ctx.shadowBlur = muzzleFlash > 0 ? 20 : 6;
     ctx.fillRect(bodyX + bodyW, y - 4, GUN_WIDTH - bodyW + 8, 8);
 
-    // Muzzle flash
     if (muzzleFlash > 0) {
       const flashSize = muzzleFlash * 14;
       const flashGrad = ctx.createRadialGradient(bodyX + GUN_WIDTH + 10, y, 0, bodyX + GUN_WIDTH + 10, y, flashSize);
@@ -150,7 +151,6 @@ export default function BaseDefenseGame() {
       ctx.fill();
     }
 
-    // Indicator light
     ctx.shadowBlur = 0;
     ctx.fillStyle = "#00e5ff";
     ctx.beginPath();
@@ -163,7 +163,6 @@ export default function BaseDefenseGame() {
     ctx.save();
     ctx.shadowColor = COLORS.bullet;
     ctx.shadowBlur = 10;
-    // Trail
     const trailGrad = ctx.createLinearGradient(b.x - 18, b.y, b.x, b.y);
     trailGrad.addColorStop(0, "rgba(255,171,0,0)");
     trailGrad.addColorStop(1, "rgba(255,171,0,0.6)");
@@ -173,7 +172,6 @@ export default function BaseDefenseGame() {
     ctx.moveTo(b.x - 18, b.y);
     ctx.lineTo(b.x, b.y);
     ctx.stroke();
-    // Bullet head
     ctx.fillStyle = COLORS.bullet;
     ctx.beginPath();
     ctx.arc(b.x, b.y, BULLET_RADIUS, 0, Math.PI * 2);
@@ -185,37 +183,28 @@ export default function BaseDefenseGame() {
 
   const drawAlien = (ctx, a, tick) => {
     const color = alienColors[a.type % 3];
-    const wobble = Math.sin(tick * 0.08 + a.id * 2) * 3;
+    const wobble = Math.sin(tick * 0.08 + a.id * 2) * 2;
     ctx.save();
     ctx.translate(a.x, a.y + wobble);
-
-    // Glow
     ctx.shadowColor = color;
     ctx.shadowBlur = 12;
-
-    // Body
     ctx.fillStyle = color;
     ctx.beginPath();
     if (a.type === 0) {
-      // Triangle alien
       ctx.moveTo(0, -ALIEN_SIZE / 2);
       ctx.lineTo(ALIEN_SIZE / 2, ALIEN_SIZE / 2);
       ctx.lineTo(-ALIEN_SIZE / 2, ALIEN_SIZE / 2);
       ctx.closePath();
     } else if (a.type === 1) {
-      // Diamond alien
       ctx.moveTo(0, -ALIEN_SIZE / 2);
       ctx.lineTo(ALIEN_SIZE / 2, 0);
       ctx.lineTo(0, ALIEN_SIZE / 2);
       ctx.lineTo(-ALIEN_SIZE / 2, 0);
       ctx.closePath();
     } else {
-      // Circle alien
       ctx.arc(0, 0, ALIEN_SIZE / 2, 0, Math.PI * 2);
     }
     ctx.fill();
-
-    // Eyes
     ctx.shadowBlur = 0;
     ctx.fillStyle = "#000";
     ctx.beginPath();
@@ -227,7 +216,6 @@ export default function BaseDefenseGame() {
     ctx.arc(-4, -3, 1.2, 0, Math.PI * 2);
     ctx.arc(6, -3, 1.2, 0, Math.PI * 2);
     ctx.fill();
-
     ctx.restore();
   };
 
@@ -250,26 +238,58 @@ export default function BaseDefenseGame() {
     ctx.restore();
   };
 
-  const drawGrid = (ctx) => {
-    ctx.save();
-    ctx.strokeStyle = COLORS.gridLine;
-    ctx.lineWidth = 1;
-    for (let x = 0; x < CANVAS_WIDTH; x += 60) {
+const drawRows = (ctx, turrets, dragging, hoveredRow) => {
+    for (let i = 0; i < NUM_ROWS; i++) {
+      const y = getRowY(i);
+      const isHovered = dragging && hoveredRow === i;
+      const hasTurret = turrets.some((t) => t.rowIndex === i);
+
+      ctx.save();
+
+      // Row lane line (dashed, runs across the whole field)
+      ctx.setLineDash([5, 7]);
+      ctx.strokeStyle = isHovered
+        ? "rgba(0,229,255,0.55)"
+        : hasTurret
+        ? "rgba(0,229,255,0.13)"
+        : "rgba(0,229,255,0.06)";
+      ctx.lineWidth = isHovered ? 1.5 : 1;
       ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, CANVAS_HEIGHT);
-      ctx.stroke();
-    }
-    for (let y = 0; y < CANVAS_HEIGHT; y += 60) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
+      ctx.moveTo(BASE_X + 55, y);
       ctx.lineTo(CANVAS_WIDTH, y);
       ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Turret slot box near the base
+      const slotX = BASE_X + 5;
+      const slotY = y - 18;
+      const slotW = 50;
+      const slotH = 36;
+      if (isHovered) {
+        ctx.fillStyle = "rgba(0,229,255,0.12)";
+        ctx.beginPath();
+        ctx.roundRect(slotX, slotY, slotW, slotH, 4);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0,229,255,0.7)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(slotX, slotY, slotW, slotH, 4);
+        ctx.stroke();
+      } else if (!hasTurret) {
+        ctx.strokeStyle = "rgba(0,229,255,0.12)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.roundRect(slotX, slotY, slotW, slotH, 4);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      ctx.restore();
     }
-    ctx.restore();
   };
 
-  const drawHUD = (ctx, score, wave) => {
+  const drawHUD = (ctx, score, wave, turretCount) => {
     ctx.save();
     ctx.font = "bold 16px 'Courier New', monospace";
     ctx.fillStyle = COLORS.hud;
@@ -279,7 +299,7 @@ export default function BaseDefenseGame() {
     ctx.textAlign = "right";
     ctx.fillStyle = "rgba(0,229,255,0.5)";
     ctx.font = "12px 'Courier New', monospace";
-    ctx.fillText("↑↓ MOVE", CANVAS_WIDTH - 14, 24);
+    ctx.fillText(`TURRETS: ${turretCount}`, CANVAS_WIDTH - 14, 24);
     ctx.restore();
   };
 
@@ -291,25 +311,26 @@ export default function BaseDefenseGame() {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
 
-    const loop = (timestamp) => {
+    const loop = () => {
       const gs = gameStateRef.current;
       if (!gs || !gs.running) return;
       gs.tick++;
 
-      // Move gun
-      if (keysRef.current.up) gs.gunY = Math.max(30, gs.gunY - GUN_MOVE_SPEED);
-      if (keysRef.current.down) gs.gunY = Math.min(CANVAS_HEIGHT - 30, gs.gunY + GUN_MOVE_SPEED);
-
-      // Auto-fire
-      if (gs.tick - gs.lastFire > FIRE_INTERVAL / 16) {
-        gs.bullets.push({ x: BASE_X + GUN_WIDTH + 18, y: gs.gunY, id: gs.tick });
-        gs.lastFire = gs.tick;
-        gs.muzzleFlash = 1;
-      }
-
-      // Muzzle flash decay
-      if (gs.muzzleFlash > 0) gs.muzzleFlash -= 0.12;
-      if (gs.muzzleFlash < 0) gs.muzzleFlash = 0;
+      // Per-turret auto-fire
+      gs.turrets.forEach((turret) => {
+        if (gs.tick - turret.lastFire > FIRE_INTERVAL / 16) {
+          gs.bullets.push({
+            x: BASE_X + GUN_WIDTH + 18,
+            y: turret.y,
+            id: gs.tick + turret.rowIndex * 0.001,
+          });
+          turret.lastFire = gs.tick;
+          turret.muzzleFlash = 1;
+        }
+        if (turret.muzzleFlash > 0) {
+          turret.muzzleFlash = Math.max(0, turret.muzzleFlash - 0.12);
+        }
+      });
 
       // Move bullets
       gs.bullets = gs.bullets.filter((b) => {
@@ -317,12 +338,21 @@ export default function BaseDefenseGame() {
         return b.x < CANVAS_WIDTH + 10;
       });
 
-      // Spawn aliens
+      // Spawn aliens on a random row
       if (gs.tick - gs.lastSpawn > gs.spawnInterval / 16) {
         const type = Math.floor(Math.random() * 3);
-        const y = Math.random() * (CANVAS_HEIGHT - 80) + 40;
+        const rowIndex = Math.floor(Math.random() * NUM_ROWS);
+        const y = getRowY(rowIndex);
         const speed = gs.alienSpeed + Math.random() * 0.6;
-        gs.aliens.push({ x: CANVAS_WIDTH + ALIEN_SIZE, y, type, speed, id: gs.tick + Math.random(), hp: 1 });
+        gs.aliens.push({
+          x: CANVAS_WIDTH + ALIEN_SIZE,
+          y,
+          rowIndex,
+          type,
+          speed,
+          id: gs.tick + Math.random(),
+          hp: 1,
+        });
         gs.lastSpawn = gs.tick;
       }
 
@@ -386,14 +416,9 @@ export default function BaseDefenseGame() {
 
       // Draw
       ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-
-      // Background
       ctx.fillStyle = COLORS.bg;
       ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-      drawGrid(ctx);
-
-      // Stars
       STARS.forEach((s) => {
         ctx.save();
         ctx.globalAlpha = s.alpha + Math.sin(gs.tick * s.twinkleSpeed) * 0.2;
@@ -414,35 +439,135 @@ export default function BaseDefenseGame() {
         ctx.restore();
       }
 
+      drawRows(ctx, gs.turrets, isDraggingRef.current, hoveredRowRef.current);
       drawBase(ctx, gs.tick);
       gs.explosions.forEach((e) => drawExplosion(ctx, e));
       gs.bullets.forEach((b) => drawBullet(ctx, b));
       gs.aliens.forEach((a) => drawAlien(ctx, a, gs.tick));
-      drawGun(ctx, gs.gunY, gs.muzzleFlash);
-      drawHUD(ctx, scoreRef.current, gs.wave);
+      gs.turrets.forEach((turret) => drawGun(ctx, turret.y, turret.muzzleFlash));
+      drawHUD(ctx, scoreRef.current, gs.wave, gs.turrets.length);
 
       animFrameRef.current = requestAnimationFrame(loop);
     };
 
     animFrameRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animFrameRef.current);
-  }, [gameStarted, gameOver]);
+  }, [gameStarted, gameOver]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Keyboard controls
+  // Keyboard: only SPACE to start/restart
   useEffect(() => {
     const onDown = (e) => {
-      if (e.key === "ArrowUp") { e.preventDefault(); keysRef.current.up = true; }
-      if (e.key === "ArrowDown") { e.preventDefault(); keysRef.current.down = true; }
-      if (e.key === " " && (gameOver || !gameStarted)) { e.preventDefault(); startGame(); }
-    };
-    const onUp = (e) => {
-      if (e.key === "ArrowUp") keysRef.current.up = false;
-      if (e.key === "ArrowDown") keysRef.current.down = false;
+      if (e.key === " " && (gameOver || !gameStarted)) {
+        e.preventDefault();
+        startGame();
+      }
     };
     window.addEventListener("keydown", onDown);
-    window.addEventListener("keyup", onUp);
-    return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
+    return () => window.removeEventListener("keydown", onDown);
   }, [gameOver, gameStarted, startGame]);
+
+  // Drag handling
+  const handleButtonMouseDown = useCallback(
+    (e) => {
+      if (cooldownDisplay > 0) return;
+      e.preventDefault();
+      setIsDragging(true);
+      isDraggingRef.current = true;
+      setDragPos({ x: e.clientX, y: e.clientY });
+    },
+    [cooldownDisplay]
+  );
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e) => {
+      setDragPos({ x: e.clientX, y: e.clientY });
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const canvasY = e.clientY - rect.top;
+      const canvasX = e.clientX - rect.left;
+      if (canvasX >= 0 && canvasX <= CANVAS_WIDTH && canvasY >= 0 && canvasY <= CANVAS_HEIGHT) {
+        let closestRow = 0;
+        let closestDist = Infinity;
+        for (let i = 0; i < NUM_ROWS; i++) {
+          const dist = Math.abs(canvasY - getRowY(i));
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestRow = i;
+          }
+        }
+        hoveredRowRef.current = closestRow;
+      } else {
+        hoveredRowRef.current = -1;
+      }
+    };
+
+    const handleMouseUp = (e) => {
+      setIsDragging(false);
+      isDraggingRef.current = false;
+
+      const canvas = canvasRef.current;
+      if (!canvas) {
+        hoveredRowRef.current = -1;
+        return;
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      const canvasX = e.clientX - rect.left;
+      const canvasY = e.clientY - rect.top;
+
+      if (canvasX >= 0 && canvasX <= CANVAS_WIDTH && canvasY >= 30 && canvasY <= CANVAS_HEIGHT - 30) {
+        let closestRow = 0;
+        let closestDist = Infinity;
+        for (let i = 0; i < NUM_ROWS; i++) {
+          const dist = Math.abs(canvasY - getRowY(i));
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestRow = i;
+          }
+        }
+
+        const gs = gameStateRef.current;
+        if (gs && gs.running) {
+          gs.turrets.push({
+            rowIndex: closestRow,
+            y: getRowY(closestRow),
+            lastFire: 0,
+            muzzleFlash: 0,
+          });
+          const end = Date.now() + TURRET_COOLDOWN_MS;
+          setCooldownEnd(end);
+          setCooldownDisplay(TURRET_COOLDOWN_MS);
+        }
+      }
+
+      hoveredRowRef.current = -1;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDragging]);
+
+  // Cooldown countdown
+  useEffect(() => {
+    if (cooldownEnd <= 0) return;
+    const interval = setInterval(() => {
+      const remaining = cooldownEnd - Date.now();
+      if (remaining <= 0) {
+        setCooldownDisplay(0);
+        clearInterval(interval);
+      } else {
+        setCooldownDisplay(remaining);
+      }
+    }, 50);
+    return () => clearInterval(interval);
+  }, [cooldownEnd]);
 
   // Screen shake decay
   useEffect(() => {
@@ -455,23 +580,42 @@ export default function BaseDefenseGame() {
   const shakeX = screenShake > 0 ? (Math.random() - 0.5) * screenShake : 0;
   const shakeY = screenShake > 0 ? (Math.random() - 0.5) * screenShake : 0;
 
+  const isOnCooldown = cooldownDisplay > 0;
+  const cooldownFraction = isOnCooldown ? cooldownDisplay / TURRET_COOLDOWN_MS : 0;
+  const circleR = 34;
+  const circleCircumference = 2 * Math.PI * circleR;
+
   return (
-    <div style={{
-      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-      minHeight: "100vh", background: "#050810", fontFamily: "'Courier New', monospace",
-      userSelect: "none",
-    }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        minHeight: "100vh",
+        background: "#050810",
+        fontFamily: "'Courier New', monospace",
+        userSelect: "none",
+      }}
+    >
       <style>{`
         @keyframes flicker { 0%,100%{opacity:1} 50%{opacity:0.85} }
         @keyframes pulse { 0%,100%{text-shadow:0 0 8px #00e5ff} 50%{text-shadow:0 0 20px #00e5ff, 0 0 40px #00e5ff} }
         @keyframes fadeIn { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes deployPulse { 0%,100%{box-shadow:0 0 12px rgba(0,229,255,0.25)} 50%{box-shadow:0 0 24px rgba(0,229,255,0.5)} }
       `}</style>
 
-      <h1 style={{
-        color: COLORS.hud, fontSize: 28, letterSpacing: 8, marginBottom: 8,
-        textTransform: "uppercase", animation: "pulse 3s infinite",
-        fontWeight: 800,
-      }}>
+      <h1
+        style={{
+          color: COLORS.hud,
+          fontSize: 28,
+          letterSpacing: 8,
+          marginBottom: 8,
+          textTransform: "uppercase",
+          animation: "pulse 3s infinite",
+          fontWeight: 800,
+        }}
+      >
         ⟐ Base Defense ⟐
       </h1>
 
@@ -481,20 +625,31 @@ export default function BaseDefenseGame() {
           width={CANVAS_WIDTH}
           height={CANVAS_HEIGHT}
           style={{
-            border: `2px solid rgba(0,229,255,0.3)`, borderRadius: 6,
-            display: "block", background: COLORS.bg,
+            border: `2px solid rgba(0,229,255,0.3)`,
+            borderRadius: 6,
+            display: "block",
+            background: COLORS.bg,
             boxShadow: "0 0 40px rgba(0,229,255,0.08), inset 0 0 60px rgba(0,0,0,0.5)",
             transform: `translate(${shakeX}px, ${shakeY}px)`,
+            cursor: isDragging ? "none" : "default",
           }}
         />
 
         {/* Start screen */}
         {!gameStarted && (
-          <div style={{
-            position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-            alignItems: "center", justifyContent: "center",
-            background: "rgba(5,8,16,0.88)", borderRadius: 6, animation: "fadeIn 0.5s ease",
-          }}>
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "rgba(5,8,16,0.88)",
+              borderRadius: 6,
+              animation: "fadeIn 0.5s ease",
+            }}
+          >
             <div style={{ color: COLORS.hud, fontSize: 42, fontWeight: 900, letterSpacing: 6, marginBottom: 16 }}>
               BASE DEFENSE
             </div>
@@ -502,18 +657,31 @@ export default function BaseDefenseGame() {
               Defend your base from alien invaders
             </div>
             <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 13, marginBottom: 32 }}>
-              ↑↓ Arrow Keys to move &nbsp;|&nbsp; Auto-fire enabled
+              Drag turrets onto rows to defend each lane
             </div>
             <button
               onClick={startGame}
               style={{
-                background: "transparent", border: `2px solid ${COLORS.hud}`, color: COLORS.hud,
-                padding: "14px 48px", fontSize: 18, fontFamily: "'Courier New', monospace",
-                cursor: "pointer", letterSpacing: 4, fontWeight: 700, borderRadius: 4,
+                background: "transparent",
+                border: `2px solid ${COLORS.hud}`,
+                color: COLORS.hud,
+                padding: "14px 48px",
+                fontSize: 18,
+                fontFamily: "'Courier New', monospace",
+                cursor: "pointer",
+                letterSpacing: 4,
+                fontWeight: 700,
+                borderRadius: 4,
                 transition: "all 0.2s",
               }}
-              onMouseEnter={(e) => { e.target.style.background = "rgba(0,229,255,0.15)"; e.target.style.boxShadow = "0 0 20px rgba(0,229,255,0.3)"; }}
-              onMouseLeave={(e) => { e.target.style.background = "transparent"; e.target.style.boxShadow = "none"; }}
+              onMouseEnter={(e) => {
+                e.target.style.background = "rgba(0,229,255,0.15)";
+                e.target.style.boxShadow = "0 0 20px rgba(0,229,255,0.3)";
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.background = "transparent";
+                e.target.style.boxShadow = "none";
+              }}
             >
               START MISSION
             </button>
@@ -525,11 +693,19 @@ export default function BaseDefenseGame() {
 
         {/* Game over */}
         {gameOver && (
-          <div style={{
-            position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-            alignItems: "center", justifyContent: "center",
-            background: "rgba(5,8,16,0.9)", borderRadius: 6, animation: "fadeIn 0.4s ease",
-          }}>
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "rgba(5,8,16,0.9)",
+              borderRadius: 6,
+              animation: "fadeIn 0.4s ease",
+            }}
+          >
             <div style={{ color: COLORS.danger, fontSize: 40, fontWeight: 900, letterSpacing: 6, marginBottom: 12 }}>
               BASE DESTROYED
             </div>
@@ -545,13 +721,26 @@ export default function BaseDefenseGame() {
             <button
               onClick={startGame}
               style={{
-                background: "transparent", border: `2px solid ${COLORS.danger}`, color: COLORS.danger,
-                padding: "14px 48px", fontSize: 18, fontFamily: "'Courier New', monospace",
-                cursor: "pointer", letterSpacing: 4, fontWeight: 700, borderRadius: 4,
+                background: "transparent",
+                border: `2px solid ${COLORS.danger}`,
+                color: COLORS.danger,
+                padding: "14px 48px",
+                fontSize: 18,
+                fontFamily: "'Courier New', monospace",
+                cursor: "pointer",
+                letterSpacing: 4,
+                fontWeight: 700,
+                borderRadius: 4,
                 transition: "all 0.2s",
               }}
-              onMouseEnter={(e) => { e.target.style.background = "rgba(255,23,68,0.15)"; e.target.style.boxShadow = "0 0 20px rgba(255,23,68,0.3)"; }}
-              onMouseLeave={(e) => { e.target.style.background = "transparent"; e.target.style.boxShadow = "none"; }}
+              onMouseEnter={(e) => {
+                e.target.style.background = "rgba(255,23,68,0.15)";
+                e.target.style.boxShadow = "0 0 20px rgba(255,23,68,0.3)";
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.background = "transparent";
+                e.target.style.boxShadow = "none";
+              }}
             >
               RETRY
             </button>
@@ -562,7 +751,168 @@ export default function BaseDefenseGame() {
         )}
       </div>
 
-      <div style={{ color: "rgba(255,255,255,0.2)", fontSize: 11, marginTop: 14, letterSpacing: 2 }}>
+      {/* Deploy turret button */}
+      {gameStarted && !gameOver && (
+        <div
+          style={{
+            marginTop: 14,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <div style={{ color: "rgba(0,229,255,0.35)", fontSize: 10, letterSpacing: 2 }}>
+            DRAG TO PLACE TURRET
+          </div>
+          <div
+            onMouseDown={handleButtonMouseDown}
+            style={{
+              position: "relative",
+              width: 80,
+              height: 80,
+              cursor: isOnCooldown ? "not-allowed" : "grab",
+              animation: !isOnCooldown ? "deployPulse 2s infinite" : "none",
+            }}
+          >
+            {/* SVG circular progress ring */}
+            <svg
+              width="80"
+              height="80"
+              style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
+            >
+              {/* Background ring */}
+              <circle
+                cx="40"
+                cy="40"
+                r={circleR}
+                fill="rgba(10,14,23,0.95)"
+                stroke={isOnCooldown ? "rgba(0,229,255,0.1)" : "rgba(0,229,255,0.35)"}
+                strokeWidth="2.5"
+              />
+              {/* Cooldown progress ring (drains as cooldown passes) */}
+              {isOnCooldown && (
+                <circle
+                  cx="40"
+                  cy="40"
+                  r={circleR}
+                  fill="none"
+                  stroke={COLORS.hud}
+                  strokeWidth="3"
+                  strokeDasharray={circleCircumference}
+                  strokeDashoffset={circleCircumference * (1 - cooldownFraction)}
+                  strokeLinecap="round"
+                  transform="rotate(-90 40 40)"
+                  style={{ transition: "stroke-dashoffset 0.05s linear" }}
+                />
+              )}
+            </svg>
+
+            {/* Inner content */}
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 4,
+                pointerEvents: "none",
+              }}
+            >
+              {isOnCooldown ? (
+                <div
+                  style={{
+                    fontSize: 18,
+                    fontWeight: 700,
+                    color: "rgba(0,229,255,0.6)",
+                    fontFamily: "'Courier New', monospace",
+                    lineHeight: 1,
+                  }}
+                >
+                  {(cooldownDisplay / 1000).toFixed(1)}
+                  <span style={{ fontSize: 10 }}>s</span>
+                </div>
+              ) : (
+                <>
+                  {/* Turret icon: body + barrel */}
+                  <div style={{ display: "flex", alignItems: "center" }}>
+                    <div
+                      style={{
+                        width: 14,
+                        height: 18,
+                        background: "#263238",
+                        border: "1.5px solid rgba(0,229,255,0.85)",
+                        borderRadius: 2,
+                      }}
+                    />
+                    <div
+                      style={{
+                        width: 12,
+                        height: 6,
+                        background: "#ff6f00",
+                        borderRadius: "0 2px 2px 0",
+                        boxShadow: "0 0 6px rgba(255,111,0,0.5)",
+                      }}
+                    />
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 8,
+                      color: COLORS.hud,
+                      fontFamily: "'Courier New', monospace",
+                      letterSpacing: 1.5,
+                    }}
+                  >
+                    DEPLOY
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Ghost turret following cursor during drag */}
+      {isDragging && (
+        <div
+          style={{
+            position: "fixed",
+            left: dragPos.x - 18,
+            top: dragPos.y - 12,
+            pointerEvents: "none",
+            zIndex: 9999,
+            display: "flex",
+            alignItems: "center",
+            background: "rgba(10,14,23,0.92)",
+            border: `1.5px solid ${COLORS.hud}`,
+            borderRadius: 3,
+            padding: "3px 5px",
+            filter: "drop-shadow(0 0 8px rgba(0,229,255,0.6))",
+          }}
+        >
+          <div
+            style={{
+              width: 11,
+              height: 15,
+              background: "#263238",
+              border: "1px solid rgba(0,229,255,0.8)",
+              borderRadius: 2,
+            }}
+          />
+          <div
+            style={{
+              width: 9,
+              height: 5,
+              background: "#ff6f00",
+              borderRadius: "0 1px 1px 0",
+            }}
+          />
+        </div>
+      )}
+
+      <div style={{ color: "rgba(255,255,255,0.2)", fontSize: 11, marginTop: 10, letterSpacing: 2 }}>
         ELIMINATE ALL THREATS • PROTECT THE BASE
       </div>
     </div>
