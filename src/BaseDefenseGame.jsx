@@ -5,16 +5,19 @@ const CANVAS_HEIGHT = 560;
 const GUN_WIDTH = 48;
 const BULLET_SPEED = 8;
 const BULLET_RADIUS = 4;
-const ALIEN_SPEED_BASE = 0.8;
+const ALIEN_SPEED_BASE = 0.5; // how fast enemies cross the screen
 const ALIEN_SIZE = 28;
-const ELITE_ALIEN_SIZE = 40;
+// Sizes indexed by tier 1-4
+const ALIEN_TIER_SIZES = [0, 28, 34, 42, 54];
 const BASE_X = 60;
-const SPAWN_INTERVAL_BASE = 2200;
+const SPAWN_INTERVAL_BASE = 1100; //how many enemies spaw per second in ms
 const FIRE_INTERVAL = 1680;
 const NUM_ROWS = 8;
 const ROW_HEIGHT = (CANVAS_HEIGHT - 60) / NUM_ROWS;
 const getRowY = (i) => 30 + ROW_HEIGHT * (i + 0.5);
 const TURRET_COOLDOWN_MS = 3000;
+const ELITE_CHANCE_PER_WAVE = 0.05; // ~9% more brutes per wave
+const ELITE_CHANCE_CAP = 0.65; // late game cap: ~65% brutes max
 
 const COLORS = {
   bg: "#0a0e17",
@@ -34,6 +37,12 @@ const COLORS = {
   eliteBody: "#7f2600",
   eliteArmor: "#ff6d00",
   eliteGlow: "#ff9800",
+  tier2Body: "#0d1f2d",
+  tier2Armor: "#00b0ff",
+  tier2Glow: "#40c4ff",
+  tier4Body: "#2a0000",
+  tier4Armor: "#b71c1c",
+  tier4Glow: "#ff5252",
 };
 
 function generateStars(count) {
@@ -185,7 +194,23 @@ export default function BaseDefenseGame() {
 
   const alienColors = [COLORS.alien1, COLORS.alien2, COLORS.alien3];
 
-  const drawNormalAlien = (ctx, a, tick) => {
+  // Shared HP bar helper — always resets shadow first
+  const drawHpBar = (ctx, a, radius) => {
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = "transparent";
+    const hpFrac = a.hp / a.maxHp;
+    const barW = radius * 2.6;
+    const barH = a.tier >= 4 ? 7 : 5;
+    const barX = -barW / 2;
+    const barY = -radius - 13;
+    ctx.fillStyle = "rgba(0,0,0,0.75)";
+    ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
+    ctx.fillStyle = hpFrac > 0.6 ? "#00e676" : hpFrac > 0.3 ? "#ffab00" : "#ff1744";
+    ctx.fillRect(barX, barY, barW * hpFrac, barH);
+  };
+
+  // Tier 1 — small colourful scout (HP 1)
+  const drawTier1Alien = (ctx, a, tick) => {
     const color = alienColors[a.type % 3];
     const wobble = Math.sin(tick * 0.08 + a.id * 2) * 2;
     const r = ALIEN_SIZE / 2;
@@ -196,16 +221,9 @@ export default function BaseDefenseGame() {
     ctx.fillStyle = color;
     ctx.beginPath();
     if (a.type === 0) {
-      ctx.moveTo(0, -r);
-      ctx.lineTo(r, r);
-      ctx.lineTo(-r, r);
-      ctx.closePath();
+      ctx.moveTo(0, -r); ctx.lineTo(r, r); ctx.lineTo(-r, r); ctx.closePath();
     } else if (a.type === 1) {
-      ctx.moveTo(0, -r);
-      ctx.lineTo(r, 0);
-      ctx.lineTo(0, r);
-      ctx.lineTo(-r, 0);
-      ctx.closePath();
+      ctx.moveTo(0, -r); ctx.lineTo(r, 0); ctx.lineTo(0, r); ctx.lineTo(-r, 0); ctx.closePath();
     } else {
       ctx.arc(0, 0, r, 0, Math.PI * 2);
     }
@@ -213,64 +231,134 @@ export default function BaseDefenseGame() {
     ctx.shadowBlur = 0;
     ctx.fillStyle = "#000";
     ctx.beginPath();
-    ctx.arc(-5, -2, 3, 0, Math.PI * 2);
-    ctx.arc(5, -2, 3, 0, Math.PI * 2);
+    ctx.arc(-5, -2, 3, 0, Math.PI * 2); ctx.arc(5, -2, 3, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = "#fff";
     ctx.beginPath();
-    ctx.arc(-4, -3, 1.2, 0, Math.PI * 2);
-    ctx.arc(6, -3, 1.2, 0, Math.PI * 2);
+    ctx.arc(-4, -3, 1.2, 0, Math.PI * 2); ctx.arc(6, -3, 1.2, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   };
 
-  const drawEliteAlien = (ctx, a, tick) => {
-    const s = ELITE_ALIEN_SIZE / 2;
-    const wobble = Math.sin(tick * 0.04 + a.id * 2) * 1.5;
+  // Tier 2 — armoured scout, electric blue octagon (HP 2-3)
+  const drawTier2Alien = (ctx, a, tick) => {
+    const s = ALIEN_TIER_SIZES[2] / 2;
+    const wobble = Math.sin(tick * 0.07 + a.id * 2) * 2;
     ctx.save();
     ctx.translate(a.x, a.y + wobble);
 
-    // Rotating spike ring
-    ctx.save();
-    ctx.rotate(tick * 0.018);
-    ctx.strokeStyle = "rgba(255,152,0,0.55)";
-    ctx.lineWidth = 2;
-    ctx.shadowColor = COLORS.eliteGlow;
-    ctx.shadowBlur = 6;
-    for (let i = 0; i < 8; i++) {
-      const ang = (i / 8) * Math.PI * 2;
-      ctx.beginPath();
-      ctx.moveTo(Math.cos(ang) * (s + 1), Math.sin(ang) * (s + 1));
-      ctx.lineTo(Math.cos(ang) * (s + 9), Math.sin(ang) * (s + 9));
-      ctx.stroke();
-    }
-    ctx.restore();
-
-    // Hexagonal outer body
-    ctx.shadowColor = COLORS.eliteGlow;
-    ctx.shadowBlur = 22;
-    ctx.fillStyle = COLORS.eliteBody;
+    // Octagonal body
+    ctx.fillStyle = COLORS.tier2Body;
     ctx.beginPath();
-    for (let i = 0; i < 6; i++) {
-      const ang = (i / 6) * Math.PI * 2 - Math.PI / 6;
-      const x = Math.cos(ang) * s;
-      const y = Math.sin(ang) * s;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    for (let i = 0; i < 8; i++) {
+      const ang = (i / 8) * Math.PI * 2 - Math.PI / 8;
+      i === 0 ? ctx.moveTo(Math.cos(ang) * s, Math.sin(ang) * s)
+              : ctx.lineTo(Math.cos(ang) * s, Math.sin(ang) * s);
     }
     ctx.closePath();
     ctx.fill();
 
+    // Bright outer stroke (replaces shadowBlur)
+    ctx.strokeStyle = COLORS.tier2Armor;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const ang = (i / 8) * Math.PI * 2 - Math.PI / 8;
+      i === 0 ? ctx.moveTo(Math.cos(ang) * s, Math.sin(ang) * s)
+              : ctx.lineTo(Math.cos(ang) * s, Math.sin(ang) * s);
+    }
+    ctx.closePath();
+    ctx.stroke();
+
+    // Inner ring
+    ctx.strokeStyle = COLORS.tier2Glow;
+    ctx.lineWidth = 1.5;
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const ang = (i / 8) * Math.PI * 2 - Math.PI / 8;
+      const r2 = s * 0.87;
+      i === 0 ? ctx.moveTo(Math.cos(ang) * r2, Math.sin(ang) * r2)
+              : ctx.lineTo(Math.cos(ang) * r2, Math.sin(ang) * r2);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // Inner faint diamond
+    ctx.fillStyle = COLORS.tier2Armor;
+    ctx.globalAlpha = 0.22;
+    ctx.beginPath();
+    ctx.moveTo(0, -s * 0.5); ctx.lineTo(s * 0.5, 0);
+    ctx.lineTo(0, s * 0.5); ctx.lineTo(-s * 0.5, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Bright cyan eyes (no shadow)
+    ctx.fillStyle = COLORS.tier2Glow;
+    ctx.beginPath();
+    ctx.arc(-s * 0.3, -s * 0.15, 4, 0, Math.PI * 2);
+    ctx.arc( s * 0.3, -s * 0.15, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    drawHpBar(ctx, a, s);
+    ctx.restore();
+  };
+
+  // Tier 3 — elite brute, orange hexagon (HP 4-6)
+  const drawTier3Alien = (ctx, a, tick) => {
+    const s = ALIEN_TIER_SIZES[3] / 2;
+    const wobble = Math.sin(tick * 0.04 + a.id * 2) * 1.5;
+    ctx.save();
+    ctx.translate(a.x, a.y + wobble);
+
+    // Rotating spike ring — all 8 spikes in one batched path
+    ctx.save();
+    ctx.rotate(tick * 0.018);
+    ctx.strokeStyle = "rgba(255,152,0,0.75)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const ang = (i / 8) * Math.PI * 2;
+      ctx.moveTo(Math.cos(ang) * (s + 1), Math.sin(ang) * (s + 1));
+      ctx.lineTo(Math.cos(ang) * (s + 9), Math.sin(ang) * (s + 9));
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    // Hexagonal outer body (no shadowBlur)
+    ctx.fillStyle = COLORS.eliteBody;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const ang = (i / 6) * Math.PI * 2 - Math.PI / 6;
+      i === 0 ? ctx.moveTo(Math.cos(ang) * s, Math.sin(ang) * s)
+              : ctx.lineTo(Math.cos(ang) * s, Math.sin(ang) * s);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // Bright outer stroke (replaces shadowBlur)
+    ctx.strokeStyle = COLORS.eliteGlow;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const ang = (i / 6) * Math.PI * 2 - Math.PI / 6;
+      i === 0 ? ctx.moveTo(Math.cos(ang) * s, Math.sin(ang) * s)
+              : ctx.lineTo(Math.cos(ang) * s, Math.sin(ang) * s);
+    }
+    ctx.closePath();
+    ctx.stroke();
+
     // Inner bright armour hex
-    ctx.shadowBlur = 0;
     ctx.fillStyle = COLORS.eliteArmor;
     ctx.strokeStyle = "#ffab40";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     for (let i = 0; i < 6; i++) {
       const ang = (i / 6) * Math.PI * 2 - Math.PI / 6;
-      const x = Math.cos(ang) * s * 0.7;
-      const y = Math.sin(ang) * s * 0.7;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      i === 0 ? ctx.moveTo(Math.cos(ang) * s * 0.7, Math.sin(ang) * s * 0.7)
+              : ctx.lineTo(Math.cos(ang) * s * 0.7, Math.sin(ang) * s * 0.7);
     }
     ctx.closePath();
     ctx.fill();
@@ -284,35 +372,127 @@ export default function BaseDefenseGame() {
     ctx.moveTo(0, -s * 0.55); ctx.lineTo(0, s * 0.55);
     ctx.stroke();
 
-    // Angular red eyes
+    // Angular red eyes (no shadow)
     ctx.fillStyle = "#ff1744";
-    ctx.shadowColor = "#ff1744";
-    ctx.shadowBlur = 10;
     ctx.save(); ctx.translate(-s * 0.28, -s * 0.18); ctx.rotate(-0.45);
-    ctx.fillRect(-5, -2.5, 10, 5);
+    ctx.fillRect(-5, -2.5, 10, 5); ctx.restore();
+    ctx.save(); ctx.translate( s * 0.28, -s * 0.18); ctx.rotate( 0.45);
+    ctx.fillRect(-5, -2.5, 10, 5); ctx.restore();
+
+    drawHpBar(ctx, a, s);
     ctx.restore();
-    ctx.save(); ctx.translate(s * 0.28, -s * 0.18); ctx.rotate(0.45);
-    ctx.fillRect(-5, -2.5, 10, 5);
+  };
+
+  // Tier 4 — dreadnought, crimson 8-point star (HP 7+)
+  const drawTier4Alien = (ctx, a, tick) => {
+    const s = ALIEN_TIER_SIZES[4] / 2;
+    const wobble = Math.sin(tick * 0.03 + a.id * 2) * 1;
+    ctx.save();
+    ctx.translate(a.x, a.y + wobble);
+
+    // Pulsing aura — simple arc fill (no createRadialGradient per frame)
+    const pulse = Math.sin(tick * 0.06) * 0.5 + 0.5;
+    ctx.save();
+    ctx.globalAlpha = 0.18 + pulse * 0.12;
+    ctx.fillStyle = "#b71c1c";
+    ctx.beginPath();
+    ctx.arc(0, 0, s + 14 + pulse * 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
     ctx.restore();
 
-    // HP bar
-    const hpFrac = a.hp / a.maxHp;
-    const barW = s * 2.6;
-    const barH = 5;
-    const barX = -barW / 2;
-    const barY = -s - 12;
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = "rgba(0,0,0,0.75)";
-    ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
-    ctx.fillStyle = hpFrac > 0.6 ? "#00e676" : hpFrac > 0.3 ? "#ffab00" : "#ff1744";
-    ctx.fillRect(barX, barY, barW * hpFrac, barH);
+    // Outer counter-rotating spikes — all 6 batched into one path
+    ctx.save();
+    ctx.rotate(-tick * 0.011);
+    ctx.strokeStyle = "rgba(255,82,82,0.85)";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const ang = (i / 6) * Math.PI * 2;
+      ctx.moveTo(Math.cos(ang) * (s + 1), Math.sin(ang) * (s + 1));
+      ctx.lineTo(Math.cos(ang) * (s + 11), Math.sin(ang) * (s + 11));
+    }
+    ctx.stroke();
+    ctx.restore();
 
+    // Inner co-rotating spikes — all 9 batched into one path
+    ctx.save();
+    ctx.rotate(tick * 0.019);
+    ctx.strokeStyle = "rgba(255,160,0,0.65)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < 9; i++) {
+      const ang = (i / 9) * Math.PI * 2;
+      ctx.moveTo(Math.cos(ang) * (s - 3), Math.sin(ang) * (s - 3));
+      ctx.lineTo(Math.cos(ang) * (s + 5), Math.sin(ang) * (s + 5));
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    // 8-point star body (no shadowBlur)
+    ctx.fillStyle = COLORS.tier4Body;
+    ctx.beginPath();
+    for (let i = 0; i < 16; i++) {
+      const ang = (i / 16) * Math.PI * 2;
+      const r = i % 2 === 0 ? s : s * 0.58;
+      i === 0 ? ctx.moveTo(Math.cos(ang) * r, Math.sin(ang) * r)
+              : ctx.lineTo(Math.cos(ang) * r, Math.sin(ang) * r);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // Bright outer stroke (replaces shadowBlur)
+    ctx.strokeStyle = COLORS.tier4Glow;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < 16; i++) {
+      const ang = (i / 16) * Math.PI * 2;
+      const r = i % 2 === 0 ? s : s * 0.58;
+      i === 0 ? ctx.moveTo(Math.cos(ang) * r, Math.sin(ang) * r)
+              : ctx.lineTo(Math.cos(ang) * r, Math.sin(ang) * r);
+    }
+    ctx.closePath();
+    ctx.stroke();
+
+    // Crimson core
+    ctx.fillStyle = COLORS.tier4Armor;
+    ctx.beginPath();
+    ctx.arc(0, 0, s * 0.62, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Hot centre
+    ctx.fillStyle = "#ff8a65";
+    ctx.beginPath();
+    ctx.arc(0, 0, s * 0.32, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Large menacing slash eyes (no shadow)
+    ctx.fillStyle = "#ff8a65";
+    ctx.save(); ctx.translate(-s * 0.3, -s * 0.18); ctx.rotate(-0.5);
+    ctx.fillRect(-8, -3.5, 16, 7); ctx.restore();
+    ctx.save(); ctx.translate( s * 0.3, -s * 0.18); ctx.rotate( 0.5);
+    ctx.fillRect(-8, -3.5, 16, 7); ctx.restore();
+
+    // Snarling jagged mouth (no shadow)
+    ctx.strokeStyle = "rgba(255,138,101,0.9)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.38, s * 0.28);
+    for (let i = 0; i <= 5; i++) {
+      const mx = -s * 0.38 + (i * s * 0.76) / 5;
+      ctx.lineTo(mx, s * 0.28 + (i % 2 === 0 ? 5 : -3));
+    }
+    ctx.stroke();
+
+    drawHpBar(ctx, a, s);
     ctx.restore();
   };
 
   const drawAlien = (ctx, a, tick) => {
-    if (a.isElite) drawEliteAlien(ctx, a, tick);
-    else drawNormalAlien(ctx, a, tick);
+    if (a.tier === 4) drawTier4Alien(ctx, a, tick);
+    else if (a.tier === 3) drawTier3Alien(ctx, a, tick);
+    else if (a.tier === 2) drawTier2Alien(ctx, a, tick);
+    else drawTier1Alien(ctx, a, tick);
   };
 
   const drawExplosion = (ctx, e) => {
@@ -334,7 +514,7 @@ export default function BaseDefenseGame() {
     ctx.restore();
   };
 
-const drawRows = (ctx, turrets, dragging, hoveredRow) => {
+  const drawRows = (ctx, turrets, dragging, hoveredRow) => {
     for (let i = 0; i < NUM_ROWS; i++) {
       const y = getRowY(i);
       const isHovered = dragging && hoveredRow === i;
@@ -438,12 +618,17 @@ const drawRows = (ctx, turrets, dragging, hoveredRow) => {
       if (gs.tick - gs.lastSpawn > gs.spawnInterval / 16) {
         const rowIndex = Math.floor(Math.random() * NUM_ROWS);
         const y = getRowY(rowIndex);
-        const eliteChance = Math.min(0.5, Math.max(0, (gs.wave - 1) * 0.15));
-        const isElite = Math.random() < eliteChance;
-        const size = isElite ? ELITE_ALIEN_SIZE : ALIEN_SIZE;
+        // Chance of rolling a high-tier alien grows each wave (no effective ceiling)
+        const eliteChance = Math.min(ELITE_CHANCE_CAP, Math.max(0, (gs.wave - 1) * ELITE_CHANCE_PER_WAVE));
+        const isEliteRoll = Math.random() < eliteChance;
+        // HP increases aggressively — drives the visual tier
+        const maxHp = isEliteRoll ? Math.min(12, 2 + Math.floor(gs.wave * 0.9)) : 1;
+        const tier = maxHp <= 1 ? 1 : maxHp <= 3 ? 2 : maxHp <= 6 ? 3 : 4;
+        const size = ALIEN_TIER_SIZES[tier];
+        // Tankier tiers move slower
+        const speedMults = [1, 1, 0.85, 0.72, 0.6];
         const baseSpeed = gs.alienSpeed + Math.random() * 0.5;
-        const speed = isElite ? baseSpeed * 0.7 : baseSpeed;
-        const maxHp = isElite ? Math.min(6, 2 + Math.floor((gs.wave - 1) / 2)) : 1;
+        const speed = baseSpeed * speedMults[tier];
         gs.aliens.push({
           x: CANVAS_WIDTH + size,
           y,
@@ -453,7 +638,7 @@ const drawRows = (ctx, turrets, dragging, hoveredRow) => {
           id: gs.tick + Math.random(),
           hp: maxHp,
           maxHp,
-          isElite,
+          tier,
           size,
         });
         gs.lastSpawn = gs.tick;
@@ -480,41 +665,46 @@ const drawRows = (ctx, turrets, dragging, hoveredRow) => {
           if (Math.sqrt(dx * dx + dy * dy) < a.size / 2 + BULLET_RADIUS) {
             gs.bullets.splice(i, 1);
             a.hp--;
+            // Per-tier glow colour for sparks / explosions
+            const tierFx = [
+              null,
+              { glow: alienColors[a.type % 3], deathCount: 8,  spread: 2,   maxPx: 3 },
+              { glow: COLORS.tier2Glow,         deathCount: 12, spread: 2.5, maxPx: 4 },
+              { glow: COLORS.eliteGlow,          deathCount: 18, spread: 3,   maxPx: 5 },
+              { glow: COLORS.tier4Glow,          deathCount: 26, spread: 4,   maxPx: 7 },
+            ][a.tier];
             if (a.hp > 0) {
               // Hit spark — small burst, enemy survives
-              const sparkColor = a.isElite ? COLORS.eliteGlow : alienColors[a.type % 3];
               newExplosions.push({
                 x: b.x, y: b.y, life: 0.5, maxLife: 0.5,
                 particles: Array.from({ length: 5 }, () => ({
                   vx: (Math.random() - 0.5) * 2.5,
                   vy: (Math.random() - 0.5) * 2.5,
                   size: Math.random() * 2 + 0.5,
-                  color: sparkColor,
+                  color: tierFx.glow,
                 })),
               });
               break; // one bullet per tick per alien
             }
-            // Enemy dies
-            const particleCount = a.isElite ? 16 : 8;
-            const particleColor = a.isElite ? COLORS.eliteGlow : alienColors[a.type % 3];
+            // Enemy dies — bigger boom for higher tiers
             newExplosions.push({
               x: a.x, y: a.y, life: 1, maxLife: 1,
-              particles: Array.from({ length: particleCount }, () => ({
-                vx: (Math.random() - 0.5) * (a.isElite ? 3 : 2),
-                vy: (Math.random() - 0.5) * (a.isElite ? 3 : 2),
-                size: Math.random() * (a.isElite ? 5 : 3) + 1,
-                color: particleColor,
+              particles: Array.from({ length: tierFx.deathCount }, () => ({
+                vx: (Math.random() - 0.5) * tierFx.spread,
+                vy: (Math.random() - 0.5) * tierFx.spread,
+                size: Math.random() * tierFx.maxPx + 1,
+                color: tierFx.glow,
               })),
             });
-            scoreRef.current += a.isElite ? 30 : 10;
+            scoreRef.current += a.maxHp * 10;
             setScore(scoreRef.current);
             gs.aliensKilledInWave++;
             if (gs.aliensKilledInWave >= gs.waveThreshold) {
               gs.wave++;
               gs.aliensKilledInWave = 0;
-              gs.waveThreshold = Math.floor(gs.waveThreshold * 1.4);
-              gs.spawnInterval = Math.max(300, gs.spawnInterval - 150);
-              gs.alienSpeed = Math.min(5.0, gs.alienSpeed + 0.25);
+              gs.waveThreshold = Math.floor(gs.waveThreshold * 1.2);
+              gs.spawnInterval = Math.max(150, gs.spawnInterval - 250);
+              gs.alienSpeed = gs.alienSpeed + 0.2; // uncapped — infinite escalation
               setWave(gs.wave);
             }
             return false;
