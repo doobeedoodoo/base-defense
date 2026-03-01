@@ -93,6 +93,8 @@ export function stepGame(gs) {
   let scoreGained = 0;
   let goldGained  = 0;
   let newWave     = null;
+  let killCount   = 0;
+  let hitCount    = 0;
 
   // ── Passive income ─────────────────────────────────────────────────────────
   // Each turret earns PASSIVE_GOLD_BASE × PASSIVE_GOLD_SCALE^level gold/sec.
@@ -170,11 +172,13 @@ export function stepGame(gs) {
 
       if (a.hp > 0) {
         // Alien survived — emit a small spark at the impact point
+        hitCount++;
         newExplosions.push(makeHitSpark(b.x, b.y, glowColor));
         break; // bullet is gone, stop checking more bullets against this alien
       }
 
       // Alien killed — emit a full death burst and award resources
+      killCount++;
       newExplosions.push(makeDeathBurst(a.x, a.y, glowColor, fx));
 
       // 1 gold per HP of the dead alien; 10 score per HP
@@ -207,7 +211,7 @@ export function stepGame(gs) {
     return e.life > 0;
   });
 
-  return { hitBase, scoreGained, goldGained, newWave, baseDmgTaken };
+  return { hitBase, scoreGained, goldGained, newWave, baseDmgTaken, killCount, hitCount };
 }
 
 // ─── Private helpers ─────────────────────────────────────────────────────────

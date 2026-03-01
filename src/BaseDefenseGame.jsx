@@ -27,6 +27,16 @@ import {
 
 import { hitTestSlot } from "./game/hitTest";
 
+import {
+  playAlienKilled,
+  playBulletHit,
+  playTurretPlaced,
+  playTurretUpgraded,
+  playGameOver,
+  startMusic,
+  stopMusic,
+} from "./game/sounds";
+
 import StartScreen   from "./components/StartScreen";
 import GameOverScreen from "./components/GameOverScreen";
 
@@ -43,8 +53,10 @@ export default function BaseDefenseGame() {
   const goldRef       = useRef(0);  // running gold total
 
   // ── Input refs (read each frame by the game loop without triggering re-renders)
-  const hoveredRowRef  = useRef(-1); // row the cursor is currently over
-  const cooldownEndRef = useRef(0);  // Date.now() timestamp when placement cooldown expires
+  const hoveredRowRef    = useRef(-1); // row the cursor is currently over
+  const cooldownEndRef   = useRef(0);  // Date.now() timestamp when placement cooldown expires
+  const lastKillSoundRef = useRef(0);  // tick of last kill sound (rate-limits audio)
+  const lastHitSoundRef  = useRef(0);  // tick of last bullet-hit sound
 
   // ── React state (drives overlay UI re-renders only) ──────────────────────
   const [score,       setScore]       = useState(0);
@@ -76,6 +88,7 @@ export default function BaseDefenseGame() {
   const startGame = useCallback(() => {
     initGame();
     setGameStarted(true);
+    startMusic();
   }, [initGame]);
 
   // ── Main game loop ────────────────────────────────────────────────────────
@@ -101,7 +114,7 @@ export default function BaseDefenseGame() {
       if (!gs || !gs.running) return;
 
       // Advance game logic by one tick
-      const { hitBase, scoreGained, goldGained, newWave, baseDmgTaken } = stepGame(gs);
+      const { hitBase, scoreGained, goldGained, newWave, baseDmgTaken, killCount, hitCount } = stepGame(gs);
 
       // Sync React state for any changes this tick
       if (scoreGained > 0) {
@@ -121,10 +134,22 @@ export default function BaseDefenseGame() {
         setWave(newWave);
       }
 
+      // ── Sound effects ─────────────────────────────────────────────────────
+      if (killCount > 0 && gs.tick - lastKillSoundRef.current > 6) {
+        playAlienKilled();
+        lastKillSoundRef.current = gs.tick;
+      }
+      if (hitCount > 0 && gs.tick - lastHitSoundRef.current > 4) {
+        playBulletHit();
+        lastHitSoundRef.current = gs.tick;
+      }
+
       // Small shake on each base hit; big shake + game over when HP reaches 0
       if (baseDmgTaken > 0) setScreenShake(4);
       if (hitBase) {
         gs.running = false;
+        stopMusic();
+        playGameOver();
         setGameOver(true);
         setHighScore((prev) => Math.max(prev, scoreRef.current));
         setScreenShake(10);
@@ -188,6 +213,7 @@ export default function BaseDefenseGame() {
       goldRef.current -= cost;
       setGold(goldRef.current);
       existing.level++;
+      playTurretUpgraded(existing.level);
       return;
     }
 
@@ -205,6 +231,7 @@ export default function BaseDefenseGame() {
       level:      0,
     });
     cooldownEndRef.current = Date.now() + TURRET_COOLDOWN_MS;
+    playTurretPlaced();
   }, []);
 
   /**

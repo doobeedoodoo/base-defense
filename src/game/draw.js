@@ -742,78 +742,131 @@ function drawPlacementSlot(ctx, rowY, tick, onCooldown, cooldownFrac, isHovered,
 
 /**
  * Draws the heads-up display:
- *   Top-left:    wave number
- *   Top-right:   score + turret count (secondary info, dimmer)
- *   Bottom-center: gold coin + amount (prominent, away from turret panel)
+ *   Top-right:    score + turret count (secondary, dimmer)
+ *   Bottom-center panel: WAVE | HP bar (with colored outline) | GOLD coin
  */
 export function drawHUD(ctx, score, wave, turretCount, gold, baseHp) {
   ctx.save();
 
-  // ── Top-left: wave label ────────────────────────────────────────────────────
-  ctx.font      = "bold 13px 'Courier New', monospace";
-  ctx.fillStyle = COLORS.hud;
-  ctx.textAlign = "left";
-  ctx.fillText(`WAVE ${wave}`, 14, 20);
-
-  // ── Top-left: base HP bar (below wave label) ─────────────────────────────
-  const hpFrac  = Math.max(0, baseHp / BASE_HP);
-  const barW    = 78;
-  const barH    = 5;
-  const barX    = 14;
-  const barY    = 27;
-  const hpColor = hpFrac > 0.5 ? "rgba(0,229,255,0.75)" : hpFrac > 0.25 ? "#ffab00" : "#ff1744";
-
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
-  ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
-  ctx.fillStyle = hpColor;
-  ctx.fillRect(barX, barY, barW * hpFrac, barH);
-
-  ctx.font      = "9px 'Courier New', monospace";
-  ctx.fillStyle = hpColor;
-  ctx.textAlign = "left";
-  ctx.fillText(`BASE ${baseHp}/${BASE_HP}`, barX, barY + barH + 10);
-
-  // ── Top-right: score + turret count ────────────────────────────────────────
+  // ── Top-right: score + turret count ─────────────────────────────────────────
   ctx.textAlign = "right";
   ctx.fillStyle = "rgba(0,229,255,0.45)";
   ctx.font      = "12px 'Courier New', monospace";
   ctx.fillText(`SCORE: ${score}`,         CANVAS_WIDTH - 14, 20);
   ctx.fillText(`TURRETS: ${turretCount}`, CANVAS_WIDTH - 14, 38);
 
-  // ── Bottom-center: gold coin + amount ───────────────────────────────────────
-  const coinR  = 12;
-  const coinY  = CANVAS_HEIGHT - 22;
-  const coinX  = CANVAS_WIDTH / 2 - 32; // coin center, amount text extends right
+  // ── Bottom-center panel ──────────────────────────────────────────────────────
+  const panelW  = 440;
+  const panelH  = 42;
+  const panelX  = (CANVAS_WIDTH - panelW) / 2;
+  const panelY  = CANVAS_HEIGHT - panelH - 8;
+  const panelCY = panelY + panelH / 2;
+
+  // Panel background + border
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.beginPath();
+  ctx.roundRect(panelX, panelY, panelW, panelH, 6);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,229,255,0.18)";
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  ctx.roundRect(panelX, panelY, panelW, panelH, 6);
+  ctx.stroke();
+
+  // ── Section 1: WAVE (left third) ────────────────────────────────────────────
+  const s1cx = panelX + panelW / 6;
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(0,229,255,0.5)";
+  ctx.font      = "10px 'Courier New', monospace";
+  ctx.fillText("WAVE", s1cx, panelCY - 6);
+  ctx.fillStyle = COLORS.hud;
+  ctx.font      = "bold 18px 'Courier New', monospace";
+  ctx.fillText(`${wave}`, s1cx, panelCY + 10);
+
+  // Divider 1
+  ctx.strokeStyle = "rgba(0,229,255,0.18)";
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  ctx.moveTo(panelX + panelW / 3, panelY + 6);
+  ctx.lineTo(panelX + panelW / 3, panelY + panelH - 6);
+  ctx.stroke();
+
+  // ── Section 2: HP bar (middle third) ────────────────────────────────────────
+  const hpFrac  = Math.max(0, baseHp / BASE_HP);
+  const hpColor = hpFrac > 0.5 ? COLORS.hud : hpFrac > 0.25 ? "#ffab00" : "#ff1744";
+  const s2cx    = panelX + panelW / 2;
+  const barW    = panelW / 3 - 24;
+  const barH    = 8;
+  const barX    = s2cx - barW / 2;
+  const barY    = panelCY - 4;
+
+  // "BASE" label
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(0,229,255,0.5)";
+  ctx.font      = "10px 'Courier New', monospace";
+  ctx.fillText("BASE", s2cx, panelCY - 8);
+
+  // Track
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
+  ctx.fillRect(barX, barY, barW, barH);
+
+  // Fill
+  ctx.fillStyle = hpColor;
+  ctx.fillRect(barX, barY, barW * hpFrac, barH);
+
+  // Outline — color-coded so the border is always visible as HP changes
+  ctx.strokeStyle = hpColor;
+  ctx.lineWidth   = 1.5;
+  ctx.strokeRect(barX, barY, barW, barH);
+
+  // "X / MAX" text below bar
+  ctx.fillStyle = hpColor;
+  ctx.font      = "bold 10px 'Courier New', monospace";
+  ctx.textAlign = "center";
+  ctx.fillText(`${baseHp} / ${BASE_HP}`, s2cx, barY + barH + 10);
+
+  // Divider 2
+  ctx.strokeStyle = "rgba(0,229,255,0.18)";
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  ctx.moveTo(panelX + 2 * panelW / 3, panelY + 6);
+  ctx.lineTo(panelX + 2 * panelW / 3, panelY + panelH - 6);
+  ctx.stroke();
+
+  // ── Section 3: GOLD (right third) ───────────────────────────────────────────
+  const coinR = 9;
+  const coinX = panelX + 5 * panelW / 6 - 26;
+  const coinY = panelCY + 1;
 
   // Coin body
   ctx.shadowColor = "#ffd600";
-  ctx.shadowBlur  = 14;
+  ctx.shadowBlur  = 10;
   ctx.fillStyle   = "#ffd600";
   ctx.beginPath();
   ctx.arc(coinX, coinY, coinR, 0, Math.PI * 2);
   ctx.fill();
   ctx.shadowBlur  = 0;
 
-  // Inner ring on coin
+  // Inner ring
   ctx.strokeStyle = "#ff8f00";
-  ctx.lineWidth   = 2;
+  ctx.lineWidth   = 1.5;
   ctx.beginPath();
-  ctx.arc(coinX, coinY, coinR - 3, 0, Math.PI * 2);
+  ctx.arc(coinX, coinY, coinR - 2.5, 0, Math.PI * 2);
   ctx.stroke();
 
-  // "G" glyph on coin
+  // "G" glyph
   ctx.fillStyle = "#7a4000";
-  ctx.font      = "bold 11px 'Courier New', monospace";
+  ctx.font      = "bold 9px 'Courier New', monospace";
   ctx.textAlign = "center";
-  ctx.fillText("G", coinX, coinY + 4);
+  ctx.fillText("G", coinX, coinY + 3);
 
-  // Gold amount
+  // Amount
   ctx.shadowColor = "#ffd600";
-  ctx.shadowBlur  = 10;
+  ctx.shadowBlur  = 8;
   ctx.fillStyle   = "#ffd600";
-  ctx.font        = "bold 22px 'Courier New', monospace";
+  ctx.font        = "bold 18px 'Courier New', monospace";
   ctx.textAlign   = "left";
-  ctx.fillText(`${gold}`, coinX + coinR + 6, coinY + 8);
+  ctx.fillText(`${gold}`, coinX + coinR + 5, coinY + 7);
   ctx.shadowBlur  = 0;
 
   ctx.restore();
